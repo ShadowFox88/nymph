@@ -7,4 +7,9 @@ services:
       - "9813:9813"
     env_file:
       - .env
+    volumes:
+      - ./services.yaml:/services.yaml:ro
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     restart: unless-stopped
