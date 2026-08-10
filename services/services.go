@@ -9,7 +9,6 @@ import (
 
 type Status struct {
 	Name   string
-	URL    string
 	Online bool
 }
 
@@ -40,7 +39,6 @@ func checkAll(client *http.Client, services map[string]string) map[string]Status
 	for name, url := range services {
 		statuses[name] = Status{
 			Name:   name,
-			URL:    url,
 			Online: ping(client, url),
 		}
 	}
