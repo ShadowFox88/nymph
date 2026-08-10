@@ -22,7 +22,7 @@ func main() {
 	go services.StartMinutelyCheck(client, config.Services)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/repos", github.ReposHandler)
+	mux.HandleFunc("GET /api/github", github.ReposHandler)
 	mux.HandleFunc("GET /api/services", services.StatusHandler)
 
 	log.Println("listening on :9813")
