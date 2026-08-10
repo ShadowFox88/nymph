@@ -17,6 +17,7 @@ FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 COPY --from=builder /build/nymph /nymph
+COPY services.yaml /services.yaml
 
 USER 65534:65534
 
