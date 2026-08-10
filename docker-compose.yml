@@ -1,0 +1,10 @@
+services:
+  nymph:
+    build: .
+    image: nymph:latest
+    container_name: nymph
+    ports:
+      - "9813:9813"
+    env_file:
+      - .env
+    restart: unless-stopped

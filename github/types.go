@@ -8,6 +8,7 @@ type Response struct {
 	TotalCount         int
 	HasNextPage        bool
 	EndCursor          string
+	Date               time.Time
 }
 
 type Repository struct {
@@ -17,6 +18,9 @@ type Repository struct {
 	ID             string
 	Name           string
 	Owner          Owner
+	IsArchived     bool
+	IsFork         bool
+	License        *License
 	Languages      []Language
 	StargazerCount int
 	URL            string
@@ -25,6 +29,12 @@ type Repository struct {
 type Owner struct {
 	Name string
 	URL  string
+}
+
+type License struct {
+	Name     string
+	Nickname string
+	Key      string
 }
 
 type Language struct {
@@ -41,6 +51,7 @@ func (r internalResponse) toResponse() Response {
 		TotalCount:         r.Data.User.ResponseRepositories.TotalCount,
 		HasNextPage:        r.Data.User.ResponseRepositories.PageInfo.HasNextPage,
 		EndCursor:          r.Data.User.ResponseRepositories.PageInfo.EndCursor,
+		Date:               time.Now(),
 	}
 }
 
@@ -59,6 +70,9 @@ func toRepositories(repos []internalRepository) []Repository {
 			ID:             repo.ID,
 			Name:           repo.Name,
 			Owner:          Owner{Name: repo.Owner.Name, URL: repo.Owner.URL},
+			IsArchived:     repo.IsArchived,
+			IsFork:         repo.IsFork,
+			License:        toLicense(repo.LicenseInfo),
 			Languages:      toLanguages(repo.Languages),
 			StargazerCount: repo.StargazerCount,
 			URL:            repo.URL,
@@ -66,6 +80,23 @@ func toRepositories(repos []internalRepository) []Repository {
 	}
 
 	return output
+}
+
+func toLicense(license *internalLicense) *License {
+	if license == nil {
+		return nil
+	}
+
+	nickname := ""
+	if license.Nickname != nil {
+		nickname = *license.Nickname
+	}
+
+	return &License{
+		Name:     license.Name,
+		Nickname: nickname,
+		Key:      license.Key,
+	}
 }
 
 func toLanguages(languages internalLanguages) []Language {
@@ -127,9 +158,18 @@ type internalRepository struct {
 	ID             string            `json:"id"`
 	Name           string            `json:"name"`
 	Owner          internalOwner     `json:"owner"`
+	IsArchived     bool              `json:"isArchived"`
+	IsFork         bool              `json:"isFork"`
+	LicenseInfo    *internalLicense  `json:"licenseInfo"`
 	Languages      internalLanguages `json:"languages"`
 	StargazerCount int               `json:"stargazerCount"`
 	URL            string            `json:"url"`
+}
+
+type internalLicense struct {
+	Name     string  `json:"name"`
+	Nickname *string `json:"nickname"`
+	Key      string  `json:"key"`
 }
 
 type internalOwner struct {

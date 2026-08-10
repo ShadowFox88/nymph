@@ -1,0 +1,3 @@
+services:
+  home: https://example.com
+  api: https://api.example.com
