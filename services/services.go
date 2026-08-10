@@ -8,8 +8,9 @@ import (
 )
 
 type Status struct {
-	Name   string
-	Online bool
+	Name      string
+	Online    bool
+	FetchedAt time.Time
 }
 
 const checkTimeout = 3 * time.Second
@@ -38,8 +39,9 @@ func checkAll(client *http.Client, services map[string]string) map[string]Status
 
 	for name, url := range services {
 		statuses[name] = Status{
-			Name:   name,
-			Online: ping(client, url),
+			Name:      name,
+			Online:    ping(client, url),
+			FetchedAt: time.Now(),
 		}
 	}
 
