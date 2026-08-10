@@ -1,15 +1,32 @@
 services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: nymph
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+    volumes:
+      - ./tailscale-state:/var/lib/tailscale
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+      - net_raw
+    ports:
+      - "9813:9813"
+    restart: unless-stopped
+
   nymph:
     build: .
     image: nymph:latest
     container_name: nymph
-    ports:
-      - "9813:9813"
+    network_mode: service:tailscale
     env_file:
       - .env
     volumes:
       - ./services.yaml:/services.yaml:ro
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+    depends_on:
+      - tailscale
     restart: unless-stopped
