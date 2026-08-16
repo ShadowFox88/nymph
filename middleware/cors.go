@@ -2,12 +2,18 @@ package middleware
 
 import "net/http"
 
-const allowedOrigin = "https://vahin.dev"
+var allowedOrigins = map[string]bool{
+	"https://vahin.dev":     true, // production
+	"http://localhost:3000": true, // local dev
+	// note, there is no security risk here because
+	// all the data is public, you can run something on
+	// localhost and read the data if you wish.
+}
 
 func CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == allowedOrigin {
+		if allowedOrigins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
