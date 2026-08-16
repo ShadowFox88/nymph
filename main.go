@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"nymph/github"
+	"nymph/middleware"
 	"nymph/services"
 )
 
@@ -25,6 +26,9 @@ func main() {
 	mux.HandleFunc("GET /api/github", github.ReposHandler)
 	mux.HandleFunc("GET /api/services", services.StatusHandler)
 
+	handler := middleware.RateLimit(mux)
+	handler = middleware.CORS(handler)
+
 	log.Println("listening on :9813")
-	log.Fatal(http.ListenAndServe(":9813", mux))
+	log.Fatal(http.ListenAndServe(":9813", handler))
 }
