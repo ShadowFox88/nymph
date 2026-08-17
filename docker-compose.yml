@@ -27,6 +27,7 @@ services:
       - .env
     volumes:
       - ./services.yaml:/services.yaml:ro
+      - ./data:/data
     depends_on:
       - tailscale
     restart: unless-stopped

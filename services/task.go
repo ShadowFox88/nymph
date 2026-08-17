@@ -28,6 +28,8 @@ func checkAndUpdate(client *http.Client, services map[string]string) {
 	defer cachedStatusesMutex.Unlock()
 	cachedStatuses = statuses
 
+	SaveStatuses(statuses)
+
 	log.Printf("statuses updated: %d services checked at %s\n", len(statuses), time.Now().Format(time.RFC3339))
 }
 

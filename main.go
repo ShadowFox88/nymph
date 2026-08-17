@@ -25,6 +25,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/github", github.ReposHandler)
 	mux.HandleFunc("GET /api/services", services.StatusHandler)
+	mux.HandleFunc("GET /api/services/history", services.HistoryHandler)
 
 	handler := middleware.RateLimit(mux)
 	handler = middleware.CORS(handler)
