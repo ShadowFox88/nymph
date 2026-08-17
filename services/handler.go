@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,14 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 		return
 	}
+}
+
+func parseDBTime(s string) time.Time {
+	if idx := strings.Index(s, " m=+"); idx != -1 {
+		s = s[:idx]
+	}
+	t, _ := time.Parse("2006-01-02 15:04:05.999999999 -0700 UTC", s)
+	return t
 }
 
 func HistoryHandler(w http.ResponseWriter, r *http.Request) {
@@ -86,10 +95,13 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 	var intervals []HistoryInterval
 	for rows.Next() {
 		var interval HistoryInterval
-		if err := rows.Scan(&interval.ServiceName, &interval.From, &interval.To, &interval.Status); err != nil {
+		var fromStr, toStr string
+		if err := rows.Scan(&interval.ServiceName, &fromStr, &toStr, &interval.Status); err != nil {
 			http.Error(w, "failed to scan row", http.StatusInternalServerError)
 			return
 		}
+		interval.From = parseDBTime(fromStr)
+		interval.To = parseDBTime(toStr)
 		intervals = append(intervals, interval)
 	}
 
