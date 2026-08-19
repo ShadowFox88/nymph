@@ -5,9 +5,16 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
+)
+
+var (
+	db      *sql.DB
+	dbOnce  sync.Once
+	dbMutex sync.RWMutex
 )
 
 type Status struct {
@@ -17,6 +24,32 @@ type Status struct {
 }
 
 const checkTimeout = 3 * time.Second
+
+func OpenDB(path string) error {
+	var initErr error
+	dbOnce.Do(func() {
+		var err error
+		db, err = sql.Open("sqlite", path)
+		if err != nil {
+			initErr = err
+			return
+		}
+		db.SetMaxOpenConns(4)
+		db.SetMaxIdleConns(4)
+
+		if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+			initErr = err
+			return
+		}
+	})
+	return initErr
+}
+
+func getDB() *sql.DB {
+	dbMutex.RLock()
+	defer dbMutex.RUnlock()
+	return db
+}
 
 func ping(client *http.Client, url string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
@@ -52,14 +85,13 @@ func checkAll(client *http.Client, services map[string]string) map[string]Status
 }
 
 func SaveStatuses(statuses map[string]Status) {
-	db, err := sql.Open("sqlite", "/data/data.db")
-	if err != nil {
-		log.Printf("failed to open database: %v\n", err)
+	d := getDB()
+	if d == nil {
+		log.Printf("database not initialized")
 		return
 	}
-	defer db.Close()
 
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS service_history (
+	_, err := d.Exec(`CREATE TABLE IF NOT EXISTS service_history (
 		servicename TEXT NOT NULL,
 		time DATETIME NOT NULL,
 		status TEXT NOT NULL CHECK(status IN ('online', 'offline'))
@@ -69,7 +101,14 @@ func SaveStatuses(statuses map[string]Status) {
 		return
 	}
 
-	tx, err := db.Begin()
+	_, err = d.Exec(`CREATE INDEX IF NOT EXISTS idx_history_servicename_time
+		ON service_history(servicename, time)`)
+	if err != nil {
+		log.Printf("failed to create index: %v\n", err)
+		return
+	}
+
+	tx, err := d.Begin()
 	if err != nil {
 		log.Printf("failed to begin transaction: %v\n", err)
 		return

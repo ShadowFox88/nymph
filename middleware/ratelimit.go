@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	ratePerSecond   = 0.5  // 30 requests per minute per IP
+	ratePerSecond   = 2  // 120 requests per minute per IP
 	rateBurst       = 30.0 // allow an initial burst of 30
 	rateIdleTimeout = 5 * time.Minute
 	rateCleanupTick = time.Minute

@@ -19,6 +19,10 @@ func main() {
 		panic(err)
 	}
 
+	if err := services.OpenDB("/data/data.db"); err != nil {
+		panic(err)
+	}
+
 	go github.StartHourlyFetch(client, config.GithubToken, "ShadowFox88")
 	go services.StartMinutelyCheck(client, config.Services)
 
