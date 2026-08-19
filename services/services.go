@@ -42,6 +42,11 @@ func OpenDB(path string) error {
 			return
 		}
 
+		if _, err := db.Exec(`PRAGMA temp_store_directory = '/data'`); err != nil {
+			initErr = err
+			return
+		}
+
 		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS service_history (
 			servicename TEXT NOT NULL,
 			time DATETIME NOT NULL,
