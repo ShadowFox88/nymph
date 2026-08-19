@@ -12,9 +12,12 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -trimpath \
     -o nymph .
 
+RUN mkdir -p /tmp && chmod 1777 /tmp
+
 FROM scratch
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /tmp /tmp
 
 COPY --from=builder /build/nymph /nymph
 

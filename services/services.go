@@ -41,6 +41,26 @@ func OpenDB(path string) error {
 			initErr = err
 			return
 		}
+
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS service_history (
+			servicename TEXT NOT NULL,
+			time DATETIME NOT NULL,
+			status TEXT NOT NULL CHECK(status IN ('online', 'offline'))
+		)`); err != nil {
+			initErr = err
+			return
+		}
+
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_history_servicename_time
+			ON service_history(servicename, time)`); err != nil {
+			initErr = err
+			return
+		}
+
+		if err := db.Ping(); err != nil {
+			initErr = err
+			return
+		}
 	})
 	return initErr
 }
@@ -88,23 +108,6 @@ func SaveStatuses(statuses map[string]Status) {
 	d := getDB()
 	if d == nil {
 		log.Printf("database not initialized")
-		return
-	}
-
-	_, err := d.Exec(`CREATE TABLE IF NOT EXISTS service_history (
-		servicename TEXT NOT NULL,
-		time DATETIME NOT NULL,
-		status TEXT NOT NULL CHECK(status IN ('online', 'offline'))
-	)`)
-	if err != nil {
-		log.Printf("failed to create table: %v\n", err)
-		return
-	}
-
-	_, err = d.Exec(`CREATE INDEX IF NOT EXISTS idx_history_servicename_time
-		ON service_history(servicename, time)`)
-	if err != nil {
-		log.Printf("failed to create index: %v\n", err)
 		return
 	}
 
