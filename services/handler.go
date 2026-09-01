@@ -160,19 +160,19 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 
 	response := make([]ServiceUptime, 0, len(sorted))
 	for _, name := range sorted {
-		response = append(response, buildServiceUptime(name, stats, start, now))
+		response = append(response, buildServiceUptime(name, stats, days, now))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
-func buildServiceUptime(service string, stats map[dayKey]*dayStat, start, end time.Time) ServiceUptime {
-	firstDay := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
-	numDays := int(end.Sub(start).Hours() / 24)
+func buildServiceUptime(service string, stats map[dayKey]*dayStat, days int, end time.Time) ServiceUptime {
+	lastDay := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, time.UTC)
+	firstDay := lastDay.Add(-time.Duration(days-1) * 24 * time.Hour)
 
-	days := make([]DayOutage, 0, numDays)
-	for i := 0; i < numDays; i++ {
+	out := make([]DayOutage, 0, days)
+	for i := 0; i < days; i++ {
 		day := firstDay.Add(time.Duration(i) * 24 * time.Hour)
 		st := stats[dayKey{service, day.Format("2006-01-02")}]
 
@@ -183,10 +183,10 @@ func buildServiceUptime(service string, stats map[dayKey]*dayStat, start, end ti
 			percentage = &pct
 			outages = st.Outages
 		}
-		days = append(days, DayOutage{Date: day, Percentage: percentage, TopOutages: outages})
+		out = append(out, DayOutage{Date: day, Percentage: percentage, TopOutages: outages})
 	}
 
-	return ServiceUptime{Service: service, Days: days}
+	return ServiceUptime{Service: service, Days: out}
 }
 
 func round1(f float64) float64 {
