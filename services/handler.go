@@ -18,13 +18,12 @@ type Outage struct {
 
 type DayOutage struct {
 	Date       time.Time `json:"date"`
-	Percentage float64   `json:"percentage"`
+	Percentage *float64  `json:"percentage"`
 	TopOutages []Outage  `json:"top_outages"`
 }
 
 type ServiceUptime struct {
 	Service string      `json:"service"`
-	Uptime  float64     `json:"uptime"`
 	Days    []DayOutage `json:"days"`
 }
 
@@ -73,7 +72,6 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 		args = append(args, service)
 	}
 
-	// Uptime: per service and day, how many checks were online vs total.
 	rows, err := d.Query(`
 		SELECT servicename, substr(time, 1, 10) AS day,
 			SUM(status = 'offline') AS offline, COUNT(*) AS total
@@ -98,7 +96,6 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 
-	// Outages: collapse consecutive offline rows into runs; keep the 3 longest per day.
 	rows, err = d.Query(`
 		WITH
 		numbered AS (
@@ -170,36 +167,26 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// buildServiceUptime returns one entry per calendar day in [start, end],
-// filling missing days with 100% uptime.
 func buildServiceUptime(service string, stats map[dayKey]*dayStat, start, end time.Time) ServiceUptime {
-	var totalOnline, totalChecks int
-
 	firstDay := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
-	numDays := int(end.Sub(start).Hours()/24) + 1
+	numDays := int(end.Sub(start).Hours() / 24)
 
 	days := make([]DayOutage, 0, numDays)
 	for i := 0; i < numDays; i++ {
 		day := firstDay.Add(time.Duration(i) * 24 * time.Hour)
 		st := stats[dayKey{service, day.Format("2006-01-02")}]
 
-		percentage := 100.0
+		var percentage *float64
 		var outages []Outage
 		if st != nil && st.Total > 0 {
-			totalOnline += st.Online
-			totalChecks += st.Total
-			percentage = round1(float64(st.Online) / float64(st.Total) * 100)
+			pct := round1(float64(st.Online) / float64(st.Total) * 100)
+			percentage = &pct
 			outages = st.Outages
 		}
 		days = append(days, DayOutage{Date: day, Percentage: percentage, TopOutages: outages})
 	}
 
-	uptime := 0.0
-	if totalChecks > 0 {
-		uptime = round1(float64(totalOnline) / float64(totalChecks) * 100)
-	}
-
-	return ServiceUptime{Service: service, Uptime: uptime, Days: days}
+	return ServiceUptime{Service: service, Days: days}
 }
 
 func round1(f float64) float64 {
