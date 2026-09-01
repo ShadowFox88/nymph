@@ -111,8 +111,8 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 			WHERE status = 'offline'
 		),
 		runs AS (
-			SELECT servicename, substr(MIN(time), 1, 10) AS day,
-				MIN(time) AS start, MAX(time) AS end, COUNT(*) AS minutes
+			SELECT servicename, substr(MAX(time), 1, 10) AS day,
+				MAX(time) AS end, COUNT(*) AS minutes
 			FROM offline
 			GROUP BY servicename, run
 		),
@@ -120,7 +120,7 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 			SELECT *, ROW_NUMBER() OVER (PARTITION BY servicename, day ORDER BY minutes DESC) AS rn
 			FROM runs
 		)
-		SELECT servicename, day, start, end, minutes
+		SELECT servicename, day, end, minutes
 		FROM ranked
 		WHERE rn <= 3`, args...)
 	if err != nil {
@@ -129,9 +129,9 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for rows.Next() {
-		var name, day, startStr, endStr string
+		var name, day, endStr string
 		var minutes int
-		if err := rows.Scan(&name, &day, &startStr, &endStr, &minutes); err != nil {
+		if err := rows.Scan(&name, &day, &endStr, &minutes); err != nil {
 			rows.Close()
 			http.Error(w, "failed to read outages", http.StatusInternalServerError)
 			return
@@ -140,9 +140,10 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 		if stats[key] == nil {
 			stats[key] = &dayStat{}
 		}
+		end := parseDBTime(endStr)
 		stats[key].Outages = append(stats[key].Outages, Outage{
-			Start:      parseDBTime(startStr),
-			End:        parseDBTime(endStr),
+			Start:      end.Add(-time.Duration(minutes) * time.Minute),
+			End:        end,
 			DurationMs: int64(minutes) * 60_000,
 		})
 	}
