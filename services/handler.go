@@ -17,9 +17,11 @@ type Outage struct {
 }
 
 type DayOutage struct {
-	Date       time.Time `json:"date"`
-	Percentage *float64  `json:"percentage"`
-	TopOutages []Outage  `json:"top_outages"`
+	Date                time.Time `json:"date"`
+	Percentage          *float64  `json:"percentage"`
+	OutageCount         int       `json:"outage_count"`
+	OutageTotalDuration int64     `json:"outage_total_duration"`
+	TopOutages          []Outage  `json:"top_outages"`
 }
 
 type ServiceUptime struct {
@@ -28,9 +30,11 @@ type ServiceUptime struct {
 }
 
 type dayStat struct {
-	Online  int
-	Total   int
-	Outages []Outage
+	Online              int
+	Total               int
+	OutageCount         int
+	OutageTotalDuration int64
+	Outages             []Outage
 }
 
 type dayKey struct {
@@ -117,10 +121,12 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 			GROUP BY servicename, run
 		),
 		ranked AS (
-			SELECT *, ROW_NUMBER() OVER (PARTITION BY servicename, day ORDER BY minutes DESC) AS rn
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY servicename, day ORDER BY minutes DESC) AS rn,
+				COUNT(*) OVER (PARTITION BY servicename, day) AS day_count,
+				SUM(minutes) OVER (PARTITION BY servicename, day) AS day_duration
 			FROM runs
 		)
-		SELECT servicename, day, end, minutes
+		SELECT servicename, day, end, minutes, day_count, day_duration
 		FROM ranked
 		WHERE rn <= 3`, args...)
 	if err != nil {
@@ -130,8 +136,8 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 
 	for rows.Next() {
 		var name, day, endStr string
-		var minutes int
-		if err := rows.Scan(&name, &day, &endStr, &minutes); err != nil {
+		var minutes, dayCount, dayDuration int
+		if err := rows.Scan(&name, &day, &endStr, &minutes, &dayCount, &dayDuration); err != nil {
 			rows.Close()
 			http.Error(w, "failed to read outages", http.StatusInternalServerError)
 			return
@@ -140,6 +146,8 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 		if stats[key] == nil {
 			stats[key] = &dayStat{}
 		}
+		stats[key].OutageCount = dayCount
+		stats[key].OutageTotalDuration = int64(dayDuration) * 60_000
 		end := parseDBTime(endStr)
 		stats[key].Outages = append(stats[key].Outages, Outage{
 			Start:      end.Add(-time.Duration(minutes) * time.Minute),
@@ -178,13 +186,20 @@ func buildServiceUptime(service string, stats map[dayKey]*dayStat, days int, end
 		st := stats[dayKey{service, day.Format("2006-01-02")}]
 
 		var percentage *float64
+		outageCount := 0
+		var outageTotalDuration int64
 		var outages []Outage
-		if st != nil && st.Total > 0 {
-			pct := round1(float64(st.Online) / float64(st.Total) * 100)
-			percentage = &pct
+		if st != nil {
+			outageCount = st.OutageCount
+			outageTotalDuration = st.OutageTotalDuration
+			if st.Total > 0 {
+				pct := round1(float64(st.Online) / float64(st.Total) * 100)
+				percentage = &pct
+			}
 			outages = st.Outages
 		}
-		out = append(out, DayOutage{Date: day, Percentage: percentage, TopOutages: outages})
+		out = append(out, DayOutage{Date: day, Percentage: percentage, OutageCount: outageCount,
+			OutageTotalDuration: outageTotalDuration, TopOutages: outages})
 	}
 
 	return ServiceUptime{Service: service, Days: out}
