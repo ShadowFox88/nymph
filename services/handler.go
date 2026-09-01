@@ -1,64 +1,48 @@
 package services
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-type HistoryInterval struct {
-	ServiceName string    `json:"servicename"`
-	From        time.Time `json:"from"`
-	To          time.Time `json:"to"`
-	Status      string    `json:"status"`
+type Outage struct {
+	Start      time.Time `json:"start"`
+	End        time.Time `json:"end"`
+	DurationMs int64     `json:"duration_ms"`
 }
 
-type HistoryResponse struct {
-	Intervals  []HistoryInterval `json:"intervals"`
-	NextCursor *string           `json:"next_cursor"`
-	HasMore    bool              `json:"has_more"`
+type DayOutage struct {
+	Date       time.Time `json:"date"`
+	Percentage float64   `json:"percentage"`
+	TopOutages []Outage  `json:"top_outages"`
 }
 
-type cacheEntry struct {
-	body      []byte
-	expiresAt time.Time
+type ServiceUptime struct {
+	Service string      `json:"service"`
+	Uptime  float64     `json:"uptime"`
+	Days    []DayOutage `json:"days"`
 }
 
-var (
-	responseCache      = make(map[string]cacheEntry)
-	responseCacheMutex sync.RWMutex
-	cacheTTL           = 30 * time.Second
-)
+type dayStat struct {
+	Online  int
+	Total   int
+	Outages []Outage
+}
+
+type dayKey struct {
+	service string
+	day     string
+}
 
 func StatusHandler(w http.ResponseWriter, r *http.Request) {
-	statuses := GetStatuses()
-
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(statuses); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-		return
-	}
+	json.NewEncoder(w).Encode(GetStatuses())
 }
-
-func parseDBTime(s string) time.Time {
-	if idx := strings.Index(s, " m=+"); idx != -1 {
-		s = s[:idx]
-	}
-	t, _ := time.Parse("2006-01-02 15:04:05.999999999 -0700 UTC", s)
-	return t
-}
-
-const (
-	defaultLimit = 50
-	maxLimit     = 200
-)
 
 func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 	d := getDB()
@@ -67,186 +51,165 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := defaultLimit
-	if l := r.URL.Query().Get("limit"); l != "" {
-		parsed, err := strconv.Atoi(l)
-		if err != nil || parsed < 1 {
-			http.Error(w, "invalid 'limit' parameter", http.StatusBadRequest)
-			return
+	days := 90
+	if ds := r.URL.Query().Get("days"); ds != "" {
+		if n, err := strconv.Atoi(ds); err == nil && n > 0 {
+			if n < 90 {
+				days = n
+			}
 		}
-		if parsed > maxLimit {
-			parsed = maxLimit
-		}
-		limit = parsed
 	}
+	service := r.URL.Query().Get("service")
 
-	var cursor *time.Time
-	if c := r.URL.Query().Get("cursor"); c != "" {
-		decoded, err := base64.StdEncoding.DecodeString(c)
-		if err != nil {
-			http.Error(w, "invalid 'cursor' parameter", http.StatusBadRequest)
-			return
-		}
-		t, err := time.Parse(time.RFC3339, string(decoded))
-		if err != nil {
-			http.Error(w, "invalid 'cursor' parameter", http.StatusBadRequest)
-			return
-		}
-		cursor = &t
+	now := time.Now().UTC()
+	start := now.Add(-time.Duration(days) * 24 * time.Hour)
+
+	filter := ""
+	if service != "" {
+		filter = ` AND servicename = ?`
 	}
-
-	cacheKey := buildCacheKey(r.URL.Query(), limit)
-
-	responseCacheMutex.RLock()
-	entry, ok := responseCache[cacheKey]
-	responseCacheMutex.RUnlock()
-	if ok && time.Now().Before(entry.expiresAt) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "public, max-age=30")
-		w.Header().Set("X-Cache", "HIT")
-		etag := fmt.Sprintf(`"%s"`, sha256hex(entry.body))
-		w.Header().Set("ETag", etag)
-		if match := r.Header.Get("If-None-Match"); match == etag {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		w.Write(entry.body)
-		return
-	}
-
-	query := `
-		SELECT servicename, MIN(time), MAX(time), status
-		FROM (
-			SELECT servicename, time, status,
-				SUM(CASE WHEN status != prev_status OR prev_status IS NULL THEN 1 ELSE 0 END)
-					OVER (PARTITION BY servicename ORDER BY time) AS grp
-			FROM (
-				SELECT servicename, time, status,
-					LAG(status) OVER (PARTITION BY servicename ORDER BY time) AS prev_status
-				FROM service_history
-				WHERE 1=1`
-	var args []any
-
-	if service := r.URL.Query().Get("service"); service != "" {
-		query += ` AND servicename = ?`
+	args := []any{start, now}
+	if service != "" {
 		args = append(args, service)
 	}
 
-	if since := r.URL.Query().Get("since"); since != "" {
-		t, err := time.Parse(time.RFC3339, since)
-		if err != nil {
-			http.Error(w, "invalid 'since' parameter, use RFC3339 format", http.StatusBadRequest)
-			return
-		}
-		query += ` AND time >= ?`
-		args = append(args, t)
-	}
-
-	if until := r.URL.Query().Get("until"); until != "" {
-		t, err := time.Parse(time.RFC3339, until)
-		if err != nil {
-			http.Error(w, "invalid 'until' parameter, use RFC3339 format", http.StatusBadRequest)
-			return
-		}
-		query += ` AND time <= ?`
-		args = append(args, t)
-	}
-
-	query += `
-			)
-		)
-		GROUP BY servicename, grp, status`
-
-	if cursor != nil {
-		query += ` HAVING MIN(time) < ?`
-		args = append(args, cursor.Format("2006-01-02 15:04:05.999999999 -0700 UTC"))
-	}
-
-	query += ` ORDER BY MIN(time) DESC LIMIT ?`
-	args = append(args, limit+1)
-
-	rows, err := d.Query(query, args...)
+	// Uptime: per service and day, how many checks were online vs total.
+	rows, err := d.Query(`
+		SELECT servicename, substr(time, 1, 10) AS day,
+			SUM(status = 'offline') AS offline, COUNT(*) AS total
+		FROM service_history
+		WHERE time >= ? AND time <= ?`+filter+`
+		GROUP BY servicename, day`, args...)
 	if err != nil {
-		http.Error(w, "failed to query history", http.StatusInternalServerError)
+		http.Error(w, "failed to query uptime", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
 
-	var intervals []HistoryInterval
+	stats := make(map[dayKey]*dayStat)
 	for rows.Next() {
-		var interval HistoryInterval
-		var fromStr, toStr string
-		if err := rows.Scan(&interval.ServiceName, &fromStr, &toStr, &interval.Status); err != nil {
-			http.Error(w, "failed to scan row", http.StatusInternalServerError)
+		var name, day string
+		var offline, total int
+		if err := rows.Scan(&name, &day, &offline, &total); err != nil {
+			rows.Close()
+			http.Error(w, "failed to read uptime", http.StatusInternalServerError)
 			return
 		}
-		interval.From = parseDBTime(fromStr)
-		interval.To = parseDBTime(toStr)
-		intervals = append(intervals, interval)
+		stats[dayKey{name, day}] = &dayStat{Online: total - offline, Total: total}
 	}
+	rows.Close()
 
-	if err := rows.Err(); err != nil {
-		http.Error(w, "error iterating rows", http.StatusInternalServerError)
+	// Outages: collapse consecutive offline rows into runs; keep the 3 longest per day.
+	rows, err = d.Query(`
+		WITH
+		numbered AS (
+			SELECT servicename, time, status,
+				ROW_NUMBER() OVER (PARTITION BY servicename ORDER BY time) AS rn
+			FROM service_history
+			WHERE time >= ? AND time <= ?`+filter+`
+		),
+		offline AS (
+			SELECT servicename, time, rn,
+				rn - ROW_NUMBER() OVER (PARTITION BY servicename ORDER BY time) AS run
+			FROM numbered
+			WHERE status = 'offline'
+		),
+		runs AS (
+			SELECT servicename, substr(MIN(time), 1, 10) AS day,
+				MIN(time) AS start, MAX(time) AS end, COUNT(*) AS minutes
+			FROM offline
+			GROUP BY servicename, run
+		),
+		ranked AS (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY servicename, day ORDER BY minutes DESC) AS rn
+			FROM runs
+		)
+		SELECT servicename, day, start, end, minutes
+		FROM ranked
+		WHERE rn <= 3`, args...)
+	if err != nil {
+		http.Error(w, "failed to query outages", http.StatusInternalServerError)
 		return
 	}
 
-	hasMore := len(intervals) > limit
-	if hasMore {
-		intervals = intervals[:limit]
+	for rows.Next() {
+		var name, day, startStr, endStr string
+		var minutes int
+		if err := rows.Scan(&name, &day, &startStr, &endStr, &minutes); err != nil {
+			rows.Close()
+			http.Error(w, "failed to read outages", http.StatusInternalServerError)
+			return
+		}
+		key := dayKey{name, day}
+		if stats[key] == nil {
+			stats[key] = &dayStat{}
+		}
+		stats[key].Outages = append(stats[key].Outages, Outage{
+			Start:      parseDBTime(startStr),
+			End:        parseDBTime(endStr),
+			DurationMs: int64(minutes) * 60_000,
+		})
 	}
+	rows.Close()
 
-	var nextCursor *string
-	if hasMore && len(intervals) > 0 {
-		c := base64.StdEncoding.EncodeToString([]byte(intervals[len(intervals)-1].From.Format(time.RFC3339)))
-		nextCursor = &c
+	names := map[string]bool{}
+	for k := range stats {
+		names[k.service] = true
 	}
+	sorted := make([]string, 0, len(names))
+	for n := range names {
+		sorted = append(sorted, n)
+	}
+	sort.Strings(sorted)
 
-	response := HistoryResponse{
-		Intervals:  intervals,
-		NextCursor: nextCursor,
-		HasMore:    hasMore,
+	response := make([]ServiceUptime, 0, len(sorted))
+	for _, name := range sorted {
+		response = append(response, buildServiceUptime(name, stats, start, now))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "public, max-age=30")
-
-	body, err := json.Marshal(response)
-	if err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-		return
-	}
-
-	etag := fmt.Sprintf(`"%s"`, sha256hex(body))
-	w.Header().Set("ETag", etag)
-	w.Header().Set("X-Cache", "MISS")
-
-	responseCacheMutex.Lock()
-	responseCache[cacheKey] = cacheEntry{body: body, expiresAt: time.Now().Add(cacheTTL)}
-	responseCacheMutex.Unlock()
-
-	if match := r.Header.Get("If-None-Match"); match == etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-
-	w.Write(body)
+	json.NewEncoder(w).Encode(response)
 }
 
-func buildCacheKey(params map[string][]string, limit int) string {
-	h := sha256.New()
-	for k, vs := range params {
-		h.Write([]byte(k))
-		h.Write([]byte{0})
-		for _, v := range vs {
-			h.Write([]byte(v))
-			h.Write([]byte{0})
+// buildServiceUptime returns one entry per calendar day in [start, end],
+// filling missing days with 100% uptime.
+func buildServiceUptime(service string, stats map[dayKey]*dayStat, start, end time.Time) ServiceUptime {
+	var totalOnline, totalChecks int
+
+	firstDay := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+	numDays := int(end.Sub(start).Hours()/24) + 1
+
+	days := make([]DayOutage, 0, numDays)
+	for i := 0; i < numDays; i++ {
+		day := firstDay.Add(time.Duration(i) * 24 * time.Hour)
+		st := stats[dayKey{service, day.Format("2006-01-02")}]
+
+		percentage := 100.0
+		var outages []Outage
+		if st != nil && st.Total > 0 {
+			totalOnline += st.Online
+			totalChecks += st.Total
+			percentage = round1(float64(st.Online) / float64(st.Total) * 100)
+			outages = st.Outages
 		}
+		days = append(days, DayOutage{Date: day, Percentage: percentage, TopOutages: outages})
 	}
-	fmt.Fprintf(h, "%d", limit)
-	return hex.EncodeToString(h.Sum(nil))
+
+	uptime := 0.0
+	if totalChecks > 0 {
+		uptime = round1(float64(totalOnline) / float64(totalChecks) * 100)
+	}
+
+	return ServiceUptime{Service: service, Uptime: uptime, Days: days}
 }
 
-func sha256hex(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
+func round1(f float64) float64 {
+	return math.Round(f*1000) / 10
+}
+
+func parseDBTime(s string) time.Time {
+	if idx := strings.Index(s, " m=+"); idx != -1 {
+		s = s[:idx]
+	}
+	t, _ := time.Parse("2006-01-02 15:04:05.999999999 -0700 UTC", s)
+	return t
 }
